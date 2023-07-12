@@ -1,0 +1,111 @@
+---
+title: "DESeq2_Mus_musculus"
+author: "Aleksandra Śmigas"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Report on performing differential expression analysis using the DESeq2 package.
+
+## Introduction
+Packages used in the analysis:
+
+* dplyr
+* tidyr
+* vroom
+* DESeq2
+* apeglm
+* ggplot2
+* pheatmap
+
+```{r, echo=FALSE, message=FALSE}
+library(dplyr)
+library(tidyr)
+library(vroom)
+library(DESeq2)
+library(apeglm)
+library(ggplot2)
+library(pheatmap)
+library(DT)
+library(rmarkdown)
+```
+
+**metadata** table preview
+```{r, echo=FALSE, message=FALSE}
+metadata <- vroom("~/Desktop/RNAseq_beginning/data/SraRunTable.txt")
+paged_table(metadata)
+```
+
+**row_counts** table preview - head
+```{r, echo=FALSE, message=FALSE}
+counts_file <- "~/Desktop/RNAseq_beginning/data/counts_all.count"
+
+raw_counts <-
+  vroom(counts_file, col_names = TRUE) %>% tibble::column_to_rownames(., var = "gene_name")
+datatable(head(raw_counts), class = 'cell-border stripe')
+
+```
+
+**coldata** table 
+```{r, echo=FALSE, message=FALSE}
+coldata <- cbind(
+  c("chronic_intermittent_hypoxia","chronic_intermittent_hypoxia","chronic_intermittent_hypoxia",
+    "control","control","control")
+)
+
+rownames(coldata) <- colnames(raw_counts)
+colnames(coldata) <- c("treatment")
+coldata <- data.frame(coldata)
+coldata$treatment <- as.factor(coldata$treatment)
+datatable(coldata,class = 'cell-border stripe') 
+```
+
+## Pre-filtering
+Removal of genes for which the sum of counts in all samples was less than 10
+```{r, echo=FALSE}
+genes_raw <- nrow(raw_counts)
+```
+
+```{r}
+raw_counts <- raw_counts %>%
+  mutate(total = rowSums(across(where(is.numeric)))) %>%
+  filter(total >= 10) %>%
+  select(!total)
+```
+
+```{r, echo=FALSE}
+genes_raw_filtered <- nrow(raw_counts)
+```
+
+Number of genes before filtration: **`r genes_raw`**.
+
+Number of genes after filtration: **`r genes_raw_filtered`**.
+
+## Unsupervised clustering analysis
+
+```{r, message=FALSE}
+dds <- DESeqDataSetFromMatrix(countData = raw_counts,
+                              colData = coldata,
+                              design = ~treatment)
+dds <- DESeq(dds)
+
+# qc
+vsd <- vst(dds, blind=TRUE) #log transformation of counts
+vsd_mat <- assay(vsd)
+vsd_cor <- cor(vsd_mat)
+pheatmap(vsd_cor, annotation = select(coldata,treatment))
+
+plotPCA(vsd, intgroup="treatment")
+
+```
+
+## Differential expression analysis
+```{r, message=FALSE}
+res <- results(dds) 
+resLFC <- lfcShrink(dds, coef="treatment_control_vs_chronic_intermittent_hypoxia", type="apeglm")
+
+plotMA(res, ylim=c(-2,2))
+plotMA(resLFC, ylim=c(-2,2))
+```

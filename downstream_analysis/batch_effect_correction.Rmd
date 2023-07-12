@@ -1,0 +1,243 @@
+---
+title: "Batch effect correction"
+author: "Aleksandra Śmigas"
+date: "2023-03-28"
+output: html_document
+header-includes:
+   - \usepackage{subfig}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+In molecular biology, a *batch effect* occurs when non-biological factors in an experiment cause changes in the data produced by the experiment. 
+```{r lab, echo=FALSE, out.width = '50%', fig.align="center"}
+knitr::include_graphics("/home/aleksandra_smigas/Desktop/RNAseq_beginning/reports/lab.png")
+```
+
+Report on performing batch effect correction using RUVSeq package .
+
+```{r, echo=FALSE, message=FALSE}
+library(RUVSeq)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(vroom)
+library(DT)
+library(rmarkdown)
+library(stringr)
+library(patchwork)
+library(ggplotify)
+```
+
+# DESeq QC step
+
+```{r deseq, echo=FALSE, out.width = '50%', fig.align="center"}
+knitr::include_graphics("/home/aleksandra_smigas/Desktop/RNAseq_beginning/reports/heatmap.png")
+knitr::include_graphics("/home/aleksandra_smigas/Desktop/RNAseq_beginning/reports/pca.png")
+```
+
+## Metadata
+**metadata** table preview
+```{r, echo=FALSE, message=FALSE}
+metadata <- vroom("~/Desktop/RNAseq_beginning/data/SraRunTable.txt")
+paged_table(metadata)
+```
+
+## Raw counts
+**row_counts** table preview - head
+```{r, message=FALSE}
+# Read raw counts data file
+counts_file <- "~/Desktop/RNAseq_beginning/data/counts_all.count"
+raw_counts <- vroom(counts_file, col_names = TRUE) %>% tibble::column_to_rownames(., var = "gene_name")
+
+# Edit metadata file fo simplify sample names
+metadata <-
+  metadata %>% mutate(TREATMENT = case_when(
+    str_detect(TREATMENT, "Chronic intermittent hypoxia") ~ "CIH",
+    TRUE ~ TREATMENT
+  ))
+colnames(raw_counts) <- c(paste(metadata$TREATMENT,c(39:44),sep="_"))
+
+datatable(head(raw_counts),class = 'cell-border stripe')
+```
+
+# Analysis
+## Filtering and exploratory data analysis
+Filter out non-expressed genes, by requiring more than 5 reads in at least two samples for each gene.
+```{r filter, message=FALSE}
+## Filtering and exploratory data analysis
+filter <- apply(raw_counts, 1, function(x) length(x[x>5])>=2)
+filtered <- raw_counts[filter,]
+```
+
+## Finding housekeeping genes
+```{r house, echo=FALSE, out.width = '100%', fig.align="center"}
+knitr::include_graphics("/home/aleksandra_smigas/Desktop/RNAseq_beginning/reports/house.png")
+```
+Source: https://www.genomics-online.com/resources/16/5049/housekeeping-genes/
+
+```{r, message=FALSE }
+# Read the data
+house_keeping_genes_data <- vroom("~/Desktop/RNAseq_beginning/data/house_keeping_gene.csv")
+
+# Prepare gene list to filter counts
+house_keeping_genes <- paste(house_keeping_genes_data$`Gene symbol`, collapse = "|")
+
+# Genes list in count table after filtration
+filtered_names <- data.frame(rownames(filtered))
+colnames(filtered_names) <- "names"
+tail(head(filtered_names,900))
+
+# Keep filtered geens that occur in house_keeping_genes list -
+# the house_keeping gene name could be just a part of gene name
+spikes <- pull(filtered_names %>%
+  filter(str_detect(names, regex(house_keeping_genes, ignore_case = TRUE))))
+
+# Filtering genes according to case size 
+house_keeping_genes_restrictive <- str_to_title(unique(house_keeping_genes_data$`Gene symbol`))
+spikes_restrictive <- pull(filtered_names %>% 
+  filter(filtered_names$names %in% house_keeping_genes_restrictive))
+```
+# Preparing SeqExpressionSet object
+We store the data in an object of S4 class SeqExpressionSet from the EDASeq package. This allows us to make full use of the plotting and normalization functionality of EDASeq. Note, however, that all the methods in RUVSeq are implemented for both SeqExpressionSet and matrix objects. See the help pages for details.
+```{r, message=FALSE }
+x <- as.factor(rep(c("CIH", "control"), each=3))
+set_raw <- newSeqExpressionSet(as.matrix(filtered),
+                           phenoData = data.frame(x, row.names = colnames(filtered)))
+```
+
+
+
+
+```{r, figures-side_raw, fig.show="hold", out.width="50%", echo = FALSE}
+library(RColorBrewer)
+colors <- brewer.pal(3, "Set2")
+plotRLE(set_raw, outline=FALSE, col=colors[x])
+title(main = "Raw data RLE plot")
+plotPCA(set_raw, col=colors[x])
+title(main = "Raw data PCA plot")
+
+```
+
+# Normalization
+Ideally, in the RLE plot the distributions should be centered around the zero line and as tight as possible. 
+This method implements three normalizations described in Bullard et al. (2010).
+```{r, normalization, fig.show="hold", out.width="50%"}
+set <- betweenLaneNormalization(set_raw, which="upper")
+```
+
+```{r, figures-side_norm, fig.show="hold", out.width="50%", echo = FALSE}
+plotRLE(set, outline=FALSE, col=colors[x])
+title(main = "Normalized data RLE plot")
+plotPCA(set, col=colors[x])
+title(main = "Normalized data PCA plot")
+```
+
+# RUVg: Estimating the factors of unwanted variation using control genes
+Uses negative control genes, assumed to have constant expression across samples.
+```{r}
+set1 <- RUVg(set, spikes, k=1)
+# Estimated factors of unwanted variation
+pData(set1)
+# Normalized values
+head(normCounts(set1))
+```
+Results for more restrict housekeeping gene list.
+```{r}
+set1_res <- RUVg(set, spikes_restrictive, k=1)
+pData(set1_res)
+```
+
+```{r, figures-side_pca_ruvg, fig.show="hold", out.width="33%", echo = FALSE}
+par(mar = c(4, 4, 2.3, .1), cex.main = 1.5)
+plotPCA(set, col=colors[x])
+title("Normalized data")
+plotPCA(set1, col=colors[x])
+title("Base housekeeping gene list")
+plotPCA(set1_res, col=colors[x])
+title("Restrictive housekeeping gene list")
+```
+
+```{r, figures-side_rle_ruvg, fig.show="hold", out.width="33%", echo = FALSE}
+par(mar = c(4, 4, 2.3, .1), cex.main = 1.5)
+plotRLE(set, outline=FALSE, col=colors[x])
+title("Normalized data")
+plotRLE(set1, outline=FALSE, col=colors[x])
+title("Base housekeeping gene list")
+plotRLE(set1_res, outline=FALSE, col=colors[x])
+title("Restrictive housekeeping gene list")
+```
+
+# RUVs: Estimating the factors of unwanted variation using replicate samples
+Uses centered (technical) replicate/negative control samples for which the covariates of interest are constant
+```{r}
+differences <- makeGroups(x)
+differences
+
+set3_k1 <- RUVs(set, rownames(filtered), k=1, differences)
+# pData(set3_k1)
+
+set3_k2 <- RUVs(set, rownames(filtered), k=2, differences)
+pData(set3_k2)
+```
+
+```{r, figures-side_pca_ruvs, fig.show="hold", out.width="33%", echo = FALSE}
+par(mar = c(4, 4, 2.3, .1), cex.main = 1.5)
+plotPCA(set, col=colors[x])
+title("Normalized data")
+plotPCA(set3_k1, col=colors[x])
+title("1 source of unwanted variation")
+plotPCA(set3_k2, col=colors[x])
+title("2 sources of unwanted variation")
+```
+
+```{r, figures-side_rle_ruvs, fig.show="hold", out.width="33%", echo = FALSE}
+par(mar = c(4, 4, 2.3, .1), cex.main = 1.5)
+plotRLE(set, outline=FALSE, col=colors[x])
+title("Normalized data")
+plotRLE(set3_k1, outline=FALSE, col=colors[x])
+title("RUVs: 1 source of unwanted variation")
+plotRLE(set3_k2, outline=FALSE, col=colors[x])
+title("RUVs: 2 sources of unwanted variation")
+```
+
+# RUVr: Estimating the factors of unwanted variation using residuals
+Uses residuals, e.g., from a first-pass GLM regression of the counts on the covariates of interest.
+```{r}
+design <- model.matrix(~x, data=pData(set))
+datatable(design)
+y <- DGEList(counts=counts(set), group=x)
+y <- calcNormFactors(y, method="upperquartile")
+y <- estimateGLMCommonDisp(y, design)
+y <- estimateGLMTagwiseDisp(y, design)
+
+fit <- glmFit(y, design)
+res <- residuals(fit, type="deviance")
+
+set4_k1 <- RUVr(set, rownames(filtered), k=1, res)
+# pData(set4_k1)
+
+set4_k2 <- RUVr(set, rownames(filtered), k=2, res)
+pData(set4_k2)
+```
+
+```{r, figures-side_pca_ruvr, fig.show="hold", out.width="33%", echo = FALSE}
+par(mar = c(4, 4, 2.3, .1), cex.main = 1.5)
+plotPCA(set, col=colors[x])
+title("Normalized data")
+plotPCA(set4_k1, col=colors[x])
+title("RUVr: 1 source of unwanted variation")
+plotPCA(set4_k2, col=colors[x])
+title("RUVr: 2 sources of unwanted variation")
+```
+
+```{r, figures-side_rle_ruvr, fig.show="hold", out.width="33%", echo = FALSE}
+par(mar = c(4, 4, 2.3, .1), cex.main = 1.5)
+plotRLE(set, outline=FALSE, col=colors[x])
+title("Normalized data")
+plotRLE(set4_k1, outline=FALSE, col=colors[x])
+title("RUVr: 1 source of unwanted variation")
+plotRLE(set4_k2, outline=FALSE, col=colors[x])
+title("RUVr: 2 sources of unwanted variation")
+```
