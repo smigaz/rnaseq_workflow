@@ -1,0 +1,177 @@
+---
+title: "edgeR_Mus_musculus"
+author: "Aleksandra Śmigas"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Report on performing differential expression analysis using the edgeR package.
+
+# Introduction
+## Packages
+Packages used in the analysis:
+
+* edgeR
+* ggplot2
+* vroom
+* dplyr
+* tidyr
+* DT
+* rmarkdown
+* statmod
+
+```{r, echo=FALSE, message=FALSE}
+library(edgeR)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(vroom)
+library(DT)
+library(rmarkdown)
+library(statmod)
+```
+## Metadata
+**metadata** table preview
+```{r, echo=FALSE, message=FALSE}
+metadata <- vroom("~/Desktop/RNAseq_beginning/data/SraRunTable.txt")
+paged_table(metadata)
+```
+## Raw counts
+**row_counts** table preview - head. Deletion of control samples (SRR20753642,SRR20753639) - incorrect grouping of control data.
+```{r, echo=FALSE, message=FALSE}
+counts_file <- "~/Desktop/RNAseq_beginning/data/counts_all.count"
+
+raw_counts <- vroom(counts_file, col_names = TRUE) %>% tibble::column_to_rownames(., var = "gene_name")
+raw_counts <- raw_counts %>% select(!c(SRR20753642,SRR20753639))
+datatable(head(raw_counts),class = 'cell-border stripe')
+```
+
+# Analysis
+## Creating DGEList object.
+**DGEList object** preview - sample 
+```{r, echo=FALSE, message=FALSE}
+
+group <- as.factor(c("cih", "cih", "control", "control"))
+
+y <- DGEList(counts=raw_counts,group=group)
+datatable(y$samples,class = 'cell-border stripe')
+
+```
+
+## Filterning
+Smallest group
+```{r,echp=FALSE}
+table(y$samples$group)
+```
+
+**minimum library size** - 0.6 (mistake)
+
+```{r}
+L = 0.6 # the minimum library size in millions.
+min_cpm_0.6 <- 10/L
+min_cpm_0.6
+```
+
+```{r, echo=FALSE}
+min_s = min(table(y$samples$group)) # the smallest group sample size 
+
+keep_0.6 <- rowSums(cpm(y) > min_cpm_0.6) >= min_s 
+datatable(as.data.frame(table(keep_0.6)),class = 'cell-border stripe')
+```
+
+**minimum library size** - 66
+
+```{r}
+L = 66 # the minimum library size in millions.
+min_cpm_66 <- 10/L
+min_cpm_66
+```
+
+```{r, echo=FALSE}
+min_s <- min(table(y$samples$group)) # the smallest group sample size 
+
+keep_66 <- rowSums(cpm(y) > min_cpm_66) >= min_s 
+datatable(as.data.frame(table(keep_66)),class = 'cell-border stripe')
+```
+
+Samples table
+```{r, echo=FALSE}
+y <- y[keep_66, , keep.lib.sizes=FALSE]
+```
+
+## Normalization
+Samples table after normalization
+```{r}
+y <- calcNormFactors(y)
+```
+
+```{r, echo=FALSE}
+datatable(y$samples,class = 'cell-border stripe')
+```
+
+## Design matrix
+```{r}
+design <- model.matrix(~0+group)
+colnames(design) <- levels(group)
+```
+
+```{r, echo=FALSE}
+datatable(as.data.frame(design),class = 'cell-border stripe')
+```
+
+## Estimation of dispersion
+```{r, echo=FALSE}
+y <- estimateDisp(y, design, robust=TRUE)
+plotBCV(y)
+```
+
+```{r, echo=FALSE}
+fit <- glmQLFit(y, design, robust=TRUE)
+plotQLDisp(fit)
+```
+
+
+
+# Differential expression analysis
+```{r, echo=FALSE}
+cih.v.control <- makeContrasts(cih-control, levels=design)
+res <- glmQLFTest(fit, contrast=cih.v.control)
+```
+
+Contrast table
+```{r, echo=FALSE}
+datatable(cih.v.control,class = 'cell-border stripe')
+```
+
+Head of top_DE
+```{r, echo=FALSE}
+#top DE genes
+top_DE <- topTags(res, n=Inf)
+datatable(head(top_DE$table),class = 'cell-border stripe')
+```
+
+```{r, echo=FALSE}
+is.de <- decideTestsDGE(res)
+
+datatable(summary(is.de),class = 'cell-border stripe')
+
+
+plotMD(res, status=is.de, values=c(1,-1), col=c("red","blue"),legend="topright")
+
+plot_data <- data.frame(AveLogCPM=res$AveLogCPM, logFC=res$table$logFC, status = as.factor(is.de))
+ggplot(plot_data) + geom_point(aes(x=AveLogCPM,y=logFC,color = status)) + xlab("Average log CPM") + ylab("log-fold-change") +  theme(axis.text=element_text(size=12), axis.title=element_text(size=14,face="bold")) + ggtitle(colnames(is.de)) + scale_color_manual(values=c("blue", "black", "red")) + theme_classic()  
+
+plot(x=top_DE$table$logFC, y=-log(top_DE$table$FDR), pch=20, xlab="logFC", ylab="-log FDR")
+legend("bottomleft", legend=c("Up-regulated", "Down-regulated"),col=c("steelblue","aquamarine3"),cex=0.9,pch=20,box.lty=0)
+title("cih vs control")
+abline(h=-log(0.05), col="red", lty=2)
+with(subset(top_DE$table, FDR<.05 & logFC>1), points(logFC, -log(FDR), pch=20, col="steelblue",lty=2))
+with(subset(top_DE$table, FDR<.05 & logFC<(-1)), points(logFC, -log(FDR), pch=20, col="aquamarine3",lty=2))
+abline(v=1, col="red", lty=2)
+abline(v=-1, col="red", lty=2)
+
+```
+
+
